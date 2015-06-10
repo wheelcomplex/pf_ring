@@ -116,16 +116,12 @@
 
 #include <linux/pf_ring.h>
 
-#ifndef SVN_REV
-#define SVN_REV ""
+#ifndef GIT_REV
+#define GIT_REV ""
 #endif
 
 #if(LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0))
 #define PDE_DATA(a) PDE(a)->data
-#endif
-
-#if(LINUX_VERSION_CODE < KERNEL_VERSION(3,11,0))
-#define netdev_notifier_info_to_dev(a) ((struct net_device*)a)
 #endif
 
 /* ************************************************* */
@@ -1457,7 +1453,7 @@ static int ring_proc_get_info(struct seq_file *m, void *data_not_used)
 
   if(m->private == NULL) {
     /* /proc/net/pf_ring/info */
-    seq_printf(m, "PF_RING Version          : %s ($Revision: %s$)\n", RING_VERSION, SVN_REV);
+    seq_printf(m, "PF_RING Version          : %s (%s)\n", RING_VERSION, GIT_REV);
     seq_printf(m, "Total rings              : %d\n", atomic_read(&ring_table_size));
     seq_printf(m, "\nStandard (non DNA/ZC) Options\n");
     seq_printf(m, "Ring slots               : %d\n", min_num_slots);
@@ -1794,7 +1790,7 @@ static inline int ring_insert(struct sock *sk)
   struct pf_ring_socket *pfr;
 
   if(unlikely(enable_debug))
-    printk("[PF_RING] ring_insert()\n");
+    printk("[PF_RING] ring_insert\n");
 
   if(lockless_list_add(&ring_table, sk) == -1)
     return -1;
@@ -1802,7 +1798,6 @@ static inline int ring_insert(struct sock *sk)
   atomic_inc(&ring_table_size);
 
   pfr = (struct pf_ring_socket *)ring_sk(sk);
-  pfr->ring_pid = current->pid;
   bitmap_zero(pfr->netdev_mask, MAX_NUM_DEVICES_ID), pfr->num_bound_devices = 0;
 
   return 0;
@@ -1875,7 +1870,7 @@ static inline u_int32_t hash_pkt(u_int16_t vlan_id, u_int8_t proto,
 {
   //if(unlikely(enable_debug))
   //  printk("[PF_RING] hash_pkt(vlan_id=%u, proto=%u, port_peer_a=%u, port_peer_b=%u)\n",
-  //	   vlan_id,proto, port_peer_a, port_peer_b);
+  //	   vlan_id, proto, port_peer_a, port_peer_b);
 
   return(vlan_id+proto+
 	 host_peer_a.v6.s6_addr32[0]+host_peer_a.v6.s6_addr32[1]+
@@ -1894,7 +1889,7 @@ static inline u_int32_t hash_pkt(u_int16_t vlan_id, u_int8_t proto,
 #define HASH_PKT_HDR_MASK_PROTO 1<<4
 #define HASH_PKT_HDR_MASK_VLAN  1<<5
 
-static inline u_int32_t hash_pkt_header(struct pfring_pkthdr * hdr, u_int32_t flags)
+static inline u_int32_t hash_pkt_header(struct pfring_pkthdr *hdr, u_int32_t flags)
 {
   if(hdr->extended_hdr.pkt_hash == 0 || flags & HASH_PKT_HDR_RECOMPUTE) {
     u_int8_t use_tunneled_peers = hdr->extended_hdr.parsed_pkt.tunnel.tunnel_id == NO_TUNNEL_ID ? 0 : 1;
@@ -2339,6 +2334,9 @@ static int parse_pkt(struct sk_buff *skb,
 
   rc = parse_raw_pkt(buffer, data_len, hdr, ip_id);
 
+  if (!hdr->extended_hdr.parsed_pkt.vlan_id) /* check for stripped vlan id */
+    __vlan_hwaccel_get_tag(skb, &hdr->extended_hdr.parsed_pkt.vlan_id);
+
   return(rc);
 }
 
@@ -2392,9 +2390,9 @@ static int hash_bucket_match(sw_filtering_hash_bucket * hash_bucket,
 	  && (hash_bucket->rule.host4_peer_b == (mask_src ? 0 : hdr->extended_hdr.parsed_pkt.ipv4_src))
 	  && (hash_bucket->rule.port_peer_a == (mask_dst ? 0 : hdr->extended_hdr.parsed_pkt.l4_dst_port))
 	  && (hash_bucket->rule.port_peer_b == (mask_src ? 0 : hdr->extended_hdr.parsed_pkt.l4_src_port)))))
-    {
-      if(hdr->extended_hdr.parsed_pkt.ip_version == 6) {
-	if(((memcmp(&hash_bucket->rule.host6_peer_a,
+  {
+    if(hdr->extended_hdr.parsed_pkt.ip_version == 6) {
+      if(((memcmp(&hash_bucket->rule.host6_peer_a,
 		    (mask_src ? &ip_zero.v6 : &hdr->extended_hdr.parsed_pkt.ipv6_src),
 		    sizeof(ip_addr) == 0))
 	    && (memcmp(&hash_bucket->rule.host6_peer_b,
@@ -2407,14 +2405,14 @@ static int hash_bucket_match(sw_filtering_hash_bucket * hash_bucket,
 	    && (memcmp(&hash_bucket->rule.host6_peer_b,
 		       (mask_dst ? &ip_zero.v6 : &hdr->extended_hdr.parsed_pkt.ipv6_src),
 		       sizeof(ip_addr) == 0)))) {
-	  return(1);
-	} else {
-	  return(0);
-	}
+        return(1);
       } else {
-	return(1);
+        return(0);
       }
     } else {
+      return(1);
+    }
+  } else {
     return(0);
   }
 }
@@ -2931,7 +2929,8 @@ static inline int copy_data_to_ring(struct sk_buff *skb,
       //         pfr->slot_header_len);
 
       if((__vlan_hwaccel_get_tag(skb, &vlan_tci) == 0) /* The packet is tagged (hw offload)... */
-	 && (hdr->extended_hdr.parsed_pkt.offset.vlan_offset == 0 /* but we have seen no tag -> it has been stripped */
+	 && ((hdr->extended_hdr.parsed_pkt.offset.vlan_offset == 0 /* but we have seen no tag -> it has been stripped */
+              || hdr->extended_hdr.parsed_pkt.vlan_id != vlan_tci /* multiple tags -> just first one has been stripped */)
              || (hdr->extended_hdr.flags & PKT_FLAGS_VLAN_HWACCEL /* in case of multiple destination rings */))) {
 	/* VLAN-tagged packet with stripped VLAN tag */
         u_int16_t *b;
@@ -3623,7 +3622,14 @@ int check_perfect_rules(struct sk_buff *skb,
   sw_filtering_hash_bucket *hash_bucket;
   u_int8_t hash_found = 0;
 
-  hash_idx = hash_pkt_header(hdr, 0) % perfect_rules_hash_size;
+  hash_idx = hash_pkt(
+    hdr->extended_hdr.parsed_pkt.vlan_id,
+    hdr->extended_hdr.parsed_pkt.l3_proto,
+    hdr->extended_hdr.parsed_pkt.ip_src,
+    hdr->extended_hdr.parsed_pkt.ip_dst,
+    hdr->extended_hdr.parsed_pkt.l4_src_port,
+    hdr->extended_hdr.parsed_pkt.l4_dst_port) 
+    % perfect_rules_hash_size;
   hash_bucket = pfr->sw_filtering_hash[hash_idx];
 
   while(hash_bucket != NULL) {
@@ -3687,8 +3693,6 @@ int check_perfect_rules(struct sk_buff *skb,
       hash_found = 0;	/* This way we also evaluate the list of rules */
       break;
     }
-  } else {
-    /* printk("[PF_RING] Packet not found\n"); */
   }
 
   return(hash_found);
@@ -4052,12 +4056,13 @@ static int add_skb_to_ring(struct sk_buff *skb,
   /* [2] Filter packet according to rules */
 
   /* [2.1] Search the hash */
-  if(pfr->sw_filtering_hash != NULL)
+  if(pfr->sw_filtering_hash != NULL) {
     hash_found = check_perfect_rules(skb, pfr, hdr, &fwd_pkt, &free_parse_mem,
 				     parse_memory_buffer, displ, &last_matched_plugin);
 
-  //if(unlikely(enable_debug))
-  //  printk("[PF_RING] check_perfect_rules() returned %d\n", hash_found);
+    //if(unlikely(enable_debug))
+    //  printk("[PF_RING] check_perfect_rules() returned %d\n", hash_found);
+  }
 
   /* [2.2] Search rules list */
   if((!hash_found) && (pfr->num_sw_filtering_rules > 0)) {
@@ -4827,9 +4832,10 @@ static int ring_create(
   struct sock *sk;
   struct pf_ring_socket *pfr;
   int err = -ENOMEM;
+  int pid = current->pid;
 
   if(unlikely(enable_debug))
-    printk("[PF_RING] %s()\n", __FUNCTION__);
+    printk("[PF_RING] %s() [pid=%d]\n", __FUNCTION__, pid);
 
   /* Are you root, superuser or so ? */
   if(!capable(CAP_NET_ADMIN))
@@ -4894,6 +4900,8 @@ static int ring_create(
   rwlock_init(&pfr->tx.consume_tx_packets_lock);
   pfr->tx.enable_tx_with_bounce = 0;
   pfr->tx.last_tx_dev_idx = UNKNOWN_INTERFACE, pfr->tx.last_tx_dev = NULL;
+
+  pfr->ring_pid = pid;
 
   if(ring_insert(sk) == -1)
     goto free_pfr;
@@ -7322,9 +7330,9 @@ static void purge_idle_rules(struct pf_ring_socket *pfr,
 static int ring_proc_stats_read(struct seq_file *m, void *data_not_used)
 {
   if(m->private != NULL) {
-    struct pf_ring_socket *s = (struct pf_ring_socket*)m->private;
+    struct pf_ring_socket *pfr = (struct pf_ring_socket*)m->private;
 
-    seq_printf(m, "%s\n", s->statsString);
+    seq_printf(m, "%s\n", pfr->statsString);
   }
 
   return(0);
@@ -7347,22 +7355,22 @@ static const struct file_operations ring_proc_stats_fops = {
 
 /* ************************************* */
 
-int setSocketStats(struct pf_ring_socket *s) 
+int setSocketStats(struct pf_ring_socket *pfr) 
 {
   /* 1 - Check if the /proc entry exists otherwise create it */
   if((ring_proc_stats_dir != NULL)
-     && (s->sock_proc_stats_name[0] == '\0')) {
+     && (pfr->sock_proc_stats_name[0] == '\0')) {
     struct proc_dir_entry *entry;
 
-    snprintf(s->sock_proc_stats_name, sizeof(s->sock_proc_stats_name),
-	     "%d-%s.%d", s->ring_pid,
-	     s->ring_netdev->dev->name, s->ring_id);
+    snprintf(pfr->sock_proc_stats_name, sizeof(pfr->sock_proc_stats_name),
+	     "%d-%s.%d", pfr->ring_pid,
+	     pfr->ring_netdev->dev->name, pfr->ring_id);
 
-    if((entry = proc_create_data(s->sock_proc_stats_name,
+    if((entry = proc_create_data(pfr->sock_proc_stats_name,
 				 0 /* ro */,
 				 ring_proc_stats_dir,
-				 &ring_proc_stats_fops, s)) == NULL) {
-      s->sock_proc_stats_name[0] = '\0';
+				 &ring_proc_stats_fops, pfr)) == NULL) {
+      pfr->sock_proc_stats_name[0] = '\0';
       return(-1);
     }
   }
@@ -7686,7 +7694,7 @@ static int ring_setsockopt(struct socket *sock,
       if(unlikely(enable_debug))
 	printk("[PF_RING] Allocating memory [filtering_rule]\n");
 
-      rule =(sw_filtering_rule_element *)
+      rule = (sw_filtering_rule_element *)
 	kcalloc(1, sizeof(sw_filtering_rule_element), GFP_KERNEL);
 
       if(rule == NULL)
@@ -9530,7 +9538,7 @@ static int __init ring_init(void)
 
   printk("[PF_RING] Welcome to PF_RING %s ($Revision: %s$)\n"
 	 "(C) 2004-14 ntop.org\n",
-	 RING_VERSION, SVN_REV);
+	 RING_VERSION, GIT_REV);
 
 #if(LINUX_VERSION_CODE > KERNEL_VERSION(2,6,11))
   if((rc = proto_register(&ring_proto, 0)) != 0)
@@ -9596,7 +9604,7 @@ module_init(ring_init);
 module_exit(ring_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Luca Deri <deri@ntop.org>");
+MODULE_AUTHOR("ntop.org");
 MODULE_DESCRIPTION("Packet capture acceleration and analysis");
 
 MODULE_ALIAS_NETPROTO(PF_RING);

@@ -41,9 +41,8 @@
 #define pfring_ptr ax25_ptr
 
 /* Versioning */
-/* NOTE: remember to update dkms.conf */
-#define RING_VERSION                "6.0.3"
-#define RING_VERSION_NUM           0x060003
+#define RING_VERSION                "6.1.1"
+#define RING_VERSION_NUM           0x060101
 
 /* Set */
 #define SO_ADD_TO_CLUSTER                 99
@@ -191,9 +190,9 @@ struct eth_vlan_hdr {
 #define NEXTHDR_MOBILITY	135
 
 struct kcompact_ipv6_hdr {
-  u_int8_t          priority:4,
+  u_int32_t         flow_lbl:24,
+		    priority:4,
                     version:4;
-  u_int8_t          flow_lbl[3];
   u_int16_t         payload_len;
   u_int8_t          nexthdr;
   u_int8_t          hop_limit;
@@ -721,14 +720,13 @@ typedef enum {
   add_device_mapping = 0, remove_device_mapping
 } zc_dev_operation;
 
+/* IMPORTANT NOTE
+ * add new family types ALWAYS at the end
+ * (i.e. append) of this datatype */
 typedef enum {
   intel_e1000e = 0,
   intel_igb,
   intel_ixgbe,
-  /* IMPORTANT NOTE
-     add new family types ALWAYS at the end
-     (i.e. append) of this datatype
-  */
   intel_ixgbe_82598,
   intel_ixgbe_82599,
   intel_igb_82580,
@@ -745,6 +743,8 @@ typedef struct {
   u_int32_t descr_packet_memory_tot_len;
   u_int16_t registers_index;
   u_int16_t stats_index;
+  u_int32_t vector;
+  u_int32_t reserved; /* future use */
 } mem_ring_info;
 
 typedef enum {
@@ -894,6 +894,10 @@ struct send_msg_to_plugin_info {
 /* ************************************************* */
 
 #ifdef __KERNEL__
+
+#if(LINUX_VERSION_CODE < KERNEL_VERSION(3,11,0))
+#define netdev_notifier_info_to_dev(a) ((struct net_device*)a)
+#endif
 
 #define CLUSTER_LEN       32
 
@@ -1098,8 +1102,7 @@ struct pf_ring_socket {
   ring_device_element *ring_netdev;
 
   DECLARE_BITMAP(netdev_mask, MAX_NUM_DEVICES_ID /* bits */);
-  u_short ring_pid;
-  u_short ring_table_slot_id;
+  int ring_pid;
   u_int32_t ring_id;
   char *appl_name; /* String that identifies the application bound to the socket */
   packet_direction direction; /* Specify the capture direction for packets */
@@ -1482,8 +1485,16 @@ void remove_plugin_from_device_list(struct net_device *dev) {
 
 static int ring_plugin_notifier(struct notifier_block *this, unsigned long msg, void *data)
 {
-  struct net_device *dev = data;
+  struct net_device *dev;
   struct pfring_hooks *hook;
+
+  if (data == NULL)
+    return NOTIFY_DONE;
+
+  dev = netdev_notifier_info_to_dev(data);
+
+  if (dev == NULL)
+    return NOTIFY_DONE;
 
   switch(msg) {
   case NETDEV_REGISTER:

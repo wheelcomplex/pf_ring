@@ -181,13 +181,13 @@ static int is_a_queue(char *device, int *cluster_id, int *queue_id) {
   return 1;
 }
 
-static int pfring_zc_daq_open(Pfring_Context_t *context, int id) {
+static int pfring_zc_daq_open(Pfring_Context_t *context, int id, char *errbuf, size_t len) {
   uint32_t default_net = 0xFFFFFF00;
   char *device = context->devices[id], *tx_device = context->tx_devices[id];
   pfring_zc_queue *q = NULL;
 
   if (device == NULL) {
-    DPE(context->errbuf, "pfring_zc_open_device(): device #%d name not found", id);
+    snprintf(errbuf, len, "pfring_zc_open_device(): device #%d name not found", id);
     return -1;
   }
  
@@ -198,7 +198,7 @@ static int pfring_zc_daq_open(Pfring_Context_t *context, int id) {
                               (context->promisc_flag ? PF_RING_PROMISC : 0));
 
     if (q == NULL) {
-      DPE(context->errbuf, "pfring_zc_open_device(): unable to open device '%s' (TX)", tx_device);
+      snprintf(errbuf, len, "pfring_zc_open_device(): unable to open device '%s' (TX)", tx_device);
       return -1;
     }
 
@@ -216,7 +216,7 @@ static int pfring_zc_daq_open(Pfring_Context_t *context, int id) {
                               (context->promisc_flag ? PF_RING_PROMISC : 0) | PF_RING_ZC_DEVICE_SW_TIMESTAMP);
 
     if (q == NULL) {
-      DPE(context->errbuf, "pfring_zc_open_device(): unable to open device '%s' (RX)", device);
+      snprintf(errbuf, len, "pfring_zc_open_device(): unable to open device '%s' (RX)", device);
       return -1;
     }
 
@@ -225,7 +225,7 @@ static int pfring_zc_daq_open(Pfring_Context_t *context, int id) {
     q = pfring_zc_ipc_attach_queue(context->cluster_id, context->ipc_queues[id], rx_only);
 
     if (q == NULL) {
-      DPE(context->errbuf, "pfring_zc_ipc_attach_queue(): unable to open queue %d from cluster %d (RX)", 
+      snprintf(errbuf, len, "pfring_zc_ipc_attach_queue(): unable to open queue %d from cluster %d (RX)", 
         context->ipc_queues[id], context->cluster_id);
       return -1;
     }
@@ -325,7 +325,7 @@ static int pfring_zc_daq_initialize(const DAQ_Config_t *config,
     } else if (!strcmp(entry->key, "bindcpu")) {
       char *end = entry->value;
       context->bindcpu = (int) strtol(entry->value, &end, 0);
-      if(*end
+      if (*end
 	 || (context->bindcpu >= numCPU)) {
 	snprintf(errbuf, len, "%s: bad bindcpu(%s)\n", __FUNCTION__, entry->value);
 	return DAQ_ERROR;
@@ -381,7 +381,7 @@ static int pfring_zc_daq_initialize(const DAQ_Config_t *config,
     context->num_devices = 0;
 
     twins = strtok_r(context->devices[DAQ_PF_RING_PASSIVE_DEV_IDX], ",", &twins_pos);
-    while(twins != NULL) {
+    while (twins != NULL) {
       char *dev, *dev_pos = NULL, *tx_dev;
       int last_twin = 0;
 
@@ -425,7 +425,7 @@ static int pfring_zc_daq_initialize(const DAQ_Config_t *config,
 
       twins = strtok_r(NULL, ",", &twins_pos);
     }
-  } else if(context->mode == DAQ_MODE_PASSIVE) {
+  } else if (context->mode == DAQ_MODE_PASSIVE) {
     /* zc:ethX,zc:ethY */
     char *dev, *dev_pos = NULL;
     context->num_devices = 0;
@@ -479,21 +479,21 @@ static int pfring_zc_daq_initialize(const DAQ_Config_t *config,
                                               context->bindcpu == 0 ? -1 : numa_node_of_cpu(context->bindcpu), NULL);
 
     if (context->cluster == NULL) {
-      DPE(context->errbuf, "%s: Cluster failed: %s(%d)", __FUNCTION__, strerror(errno), errno);
+      snprintf(errbuf, len, "%s: Cluster failed: %s (error %d)", __FUNCTION__, strerror(errno), errno);
       return DAQ_ERROR;
     }
 
     context->buffer = pfring_zc_get_packet_handle(context->cluster);
 
     if (context->buffer == NULL) {
-      DPE(context->errbuf, "%s: Buffer allocation failed: %s(%d)", __FUNCTION__, strerror(errno), errno);
+      snprintf(errbuf, len, "%s: Buffer allocation failed: %s(%d)", __FUNCTION__, strerror(errno), errno);
       return DAQ_ERROR;
     }
 
     context->buffer_inject = pfring_zc_get_packet_handle(context->cluster);
 
     if (context->buffer_inject == NULL) {
-      DPE(context->errbuf, "%s: Buffer allocation failed: %s(%d)", __FUNCTION__, strerror(errno), errno);
+      snprintf(errbuf, len, "%s: Buffer allocation failed: %s(%d)", __FUNCTION__, strerror(errno), errno);
       return DAQ_ERROR;
     }
 
@@ -501,8 +501,8 @@ static int pfring_zc_daq_initialize(const DAQ_Config_t *config,
 
     context->ipc_pool = pfring_zc_ipc_attach_buffer_pool(context->cluster_id, context->ipc_queues[0]);
 
-    if(context->ipc_pool == NULL) {
-      DPE(context->errbuf, "%s: pfring_zc_ipc_attach_buffer_pool error %s(%d), please check that cluster %d is running\n",
+    if (context->ipc_pool == NULL) {
+      snprintf(errbuf, len, "%s: pfring_zc_ipc_attach_buffer_pool error %s(%d), please check that cluster %d is running\n",
           __FUNCTION__, strerror(errno), errno, context->cluster_id);
       return -1;
     }
@@ -510,14 +510,14 @@ static int pfring_zc_daq_initialize(const DAQ_Config_t *config,
     context->buffer = pfring_zc_get_packet_handle_from_pool(context->ipc_pool);
 
     if (context->buffer == NULL) {
-      DPE(context->errbuf, "%s: Buffer allocation failed: %s(%d)", __FUNCTION__, strerror(errno), errno);
+      snprintf(errbuf, len, "%s: Buffer allocation failed: %s(%d)", __FUNCTION__, strerror(errno), errno);
       return DAQ_ERROR;
     }
 
   }
 
   for (i = 0; i < context->num_devices; i++) {
-    if (pfring_zc_daq_open(context, i) == -1)
+    if (pfring_zc_daq_open(context, i, errbuf, len) == -1)
       return DAQ_ERROR;
   }
 
@@ -623,7 +623,7 @@ static inline void pfring_zc_daq_process(Pfring_Context_t *context, pfring_zc_pk
 
   verdict = context->analysis_func(user, &hdr, pkt_buffer);
 
-  if(verdict >= MAX_DAQ_VERDICT)
+  if (verdict >= MAX_DAQ_VERDICT)
     verdict = DAQ_VERDICT_PASS;
 
   switch(verdict) {
@@ -871,7 +871,7 @@ static int pfring_zc_daq_inject(void *handle, const DAQ_PktHdr_t *hdr,
     len
   );
 
-  if(pfring_zc_send_pkt(context->tx_queues[tx_ring_idx],
+  if (pfring_zc_send_pkt(context->tx_queues[tx_ring_idx],
 		        &context->buffer_inject, 1 /* flush packet */) < 0) {
     DPE(context->errbuf, "%s", "pfring_zc_send_pkt() error");
     return DAQ_ERROR;
@@ -903,10 +903,20 @@ static int pfring_zc_daq_stop(void *handle) {
 }
 
 static void pfring_zc_daq_shutdown(void *handle) {
-  Pfring_Context_t *context =(Pfring_Context_t *) handle;
+  Pfring_Context_t *context = (Pfring_Context_t *) handle;
+  int i;
 
-  if (context->cluster)
-    pfring_zc_destroy_cluster(context->cluster);
+  if (!context->ipc_attach) {
+    if (context->cluster)
+      pfring_zc_destroy_cluster(context->cluster);
+  } else {
+    for (i = 0; i < context->num_devices; i++)
+      if (context->rx_queues[i])
+        pfring_zc_ipc_detach_queue(context->rx_queues[i]);
+
+    if (context->ipc_pool)
+      pfring_zc_ipc_detach_buffer_pool(context->ipc_pool);
+  }
 
   if (context->devices[DAQ_PF_RING_PASSIVE_DEV_IDX])
     free(context->devices[DAQ_PF_RING_PASSIVE_DEV_IDX]);
